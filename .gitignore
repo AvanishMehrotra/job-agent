@@ -1,0 +1,5 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+# data/seen_jobs.json is tracked — committed by GitHub Actions for dedup persistence
