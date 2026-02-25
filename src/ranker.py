@@ -76,8 +76,8 @@ def rank_jobs(jobs: list[dict]) -> list[dict]:
 
     client = Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
-    # Process in batches of 10 (more room for richer output per job)
-    batch_size = 10
+    # Process in batches of 5 (rich output per job needs room)
+    batch_size = 5
     scored_jobs = []
 
     for i in range(0, len(jobs), batch_size):
@@ -116,7 +116,7 @@ def _score_batch(client: Anthropic, batch: list[dict]) -> list[dict]:
     try:
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=4000,
+            max_tokens=8192,
             system=SYSTEM_PROMPT.format(profile=config.CANDIDATE_PROFILE),
             messages=[{"role": "user", "content": user_msg}],
         )
@@ -139,15 +139,61 @@ def _score_batch(client: Anthropic, batch: list[dict]) -> list[dict]:
         print(f"[ranker] Scored {len(batch)} jobs — {input_tokens} in / {output_tokens} out tokens")
 
     except json.JSONDecodeError as e:
-        print(f"[ranker] JSON parse error: {e}")
-        for job in batch:
-            job["scores"] = _empty_scores("Parse error during scoring")
+        print(f"[ranker] JSON parse error on batch of {len(batch)}: {e}")
+        # Fallback: score each job individually
+        if len(batch) > 1:
+            print(f"[ranker] Retrying {len(batch)} jobs one at a time...")
+            for job in batch:
+                _score_single(client, job)
+        else:
+            for job in batch:
+                job["scores"] = _empty_scores("Parse error during scoring")
     except Exception as e:
         print(f"[ranker] Claude API error: {e}")
         for job in batch:
             job["scores"] = _empty_scores("API error during scoring")
 
     return batch
+
+
+def _score_single(client: Anthropic, job: dict) -> None:
+    """Score a single job as fallback when batch parsing fails."""
+    quals = "\n".join(f"  - {q}" for q in job.get("qualifications", [])[:5])
+    resps = "\n".join(f"  - {r}" for r in job.get("responsibilities", [])[:4])
+    quals_section = f"\nKey Qualifications:\n{quals}" if quals else ""
+    resps_section = f"\nKey Responsibilities:\n{resps}" if resps else ""
+
+    summary = (
+        f"ID: {job['id']}\n"
+        f"Title: {job['title']}\n"
+        f"Company: {job['company']}\n"
+        f"Location: {job['location']}\n"
+        f"Salary: {job.get('salary', 'Not listed')}\n"
+        f"Posted: {job.get('posted', 'Unknown')}\n"
+        f"Description: {job['description'][:800]}"
+        f"{quals_section}"
+        f"{resps_section}\n"
+    )
+
+    try:
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=2048,
+            system=SYSTEM_PROMPT.format(profile=config.CANDIDATE_PROFILE),
+            messages=[{"role": "user", "content": f"Score this job listing:\n\n{summary}"}],
+        )
+        text = response.content[0].text.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        result = json.loads(text)
+        scores = result.get("scores", [])
+        if scores:
+            job["scores"] = scores[0]
+        else:
+            job["scores"] = _empty_scores("No scores returned")
+    except Exception as e:
+        print(f"[ranker]   Single-job fallback failed for {job.get('title', '?')}: {e}")
+        job["scores"] = _empty_scores("Scoring failed")
 
 
 def _empty_scores(reason: str) -> dict:
