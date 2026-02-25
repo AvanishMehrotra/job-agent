@@ -209,8 +209,10 @@ def _build_job_card(job: dict, rank: int, expanded: bool = True) -> str:
     desc = job.get("description", "")[:400]
     desc_html = f"{desc}{'...' if len(job.get('description', '')) > 400 else ''}"
 
+    anchor_id = f"job-{job.get('id', rank)}"
+
     return f"""
-    <div style="border:1px solid {border_color};border-left:4px solid {border_color};border-radius:8px;padding:16px;margin-bottom:14px;background:#ffffff;">
+    <div id="{anchor_id}" style="border:1px solid {border_color};border-left:4px solid {border_color};border-radius:8px;padding:16px;margin-bottom:14px;background:#ffffff;">
       <!-- Header -->
       <div style="display:flex;justify-content:space-between;align-items:flex-start;">
         <div style="flex:1;">
@@ -264,15 +266,82 @@ def _build_summary_row(job: dict, rank: int) -> str:
     title_link = f'<a href="{url}" style="color:#2563eb;text-decoration:none;">{job["title"]}</a>' if url else job["title"]
     salary = job.get("salary", "")
     salary_html = f'<span style="color:#059669;">{salary}</span>' if salary else '-'
+    anchor_id = f"job-{job.get('id', rank)}"
 
     return f"""
-    <tr style="border-bottom:1px solid #f3f4f6;">
+    <tr id="{anchor_id}" style="border-bottom:1px solid #f3f4f6;">
       <td style="padding:8px 6px;font-size:12px;color:#9ca3af;">{rank}</td>
       <td style="padding:8px 6px;font-size:12px;font-weight:600;color:{color};">{overall:.0f}</td>
       <td style="padding:8px 6px;font-size:13px;">{title_link}</td>
       <td style="padding:8px 6px;font-size:12px;color:#6b7280;">{job['company']}{_priority_badge(job.get('company', ''))}</td>
       <td style="padding:8px 6px;font-size:12px;">{salary_html}</td>
     </tr>
+    """
+
+
+def _build_toc_table(jobs: list[dict]) -> str:
+    """Build a quick-reference summary table at the top with anchor links to each job."""
+    if not jobs:
+        return ""
+
+    rows = ""
+    for i, job in enumerate(jobs):
+        scores = job.get("scores", {})
+        overall = scores.get("overall", 0)
+        color = _score_color(overall)
+        anchor_id = f"job-{job.get('id', i + 1)}"
+        title = job.get("title", "Untitled")
+        company = job.get("company", "")
+        location = job.get("location", "")
+        salary = job.get("salary", "")
+
+        # Truncate long titles
+        if len(title) > 45:
+            title = title[:42] + "..."
+
+        loc_short = location.split(",")[0] if location else ""
+        if "remote" in location.lower():
+            loc_short = "Remote" if not loc_short or "remote" in loc_short.lower() else f"{loc_short} / Remote"
+
+        salary_html = f'<span style="color:#059669;font-size:11px;">{salary}</span>' if salary else ''
+
+        badge = ""
+        company_lower = company.lower()
+        for p in config.PRIORITIZE_COMPANIES:
+            if p.lower() in company_lower:
+                badge = ' <span style="color:#2563eb;font-size:9px;">&#9733;</span>'
+                break
+
+        rows += f"""
+        <tr style="border-bottom:1px solid #f3f4f6;">
+          <td style="padding:5px 4px;font-size:11px;color:#9ca3af;text-align:center;">{i + 1}</td>
+          <td style="padding:5px 4px;text-align:center;"><span style="font-size:12px;font-weight:700;color:{color};">{overall:.0f}</span></td>
+          <td style="padding:5px 4px;font-size:12px;"><a href="#{anchor_id}" style="color:#111827;text-decoration:none;">{title}</a></td>
+          <td style="padding:5px 4px;font-size:11px;color:#6b7280;">{company}{badge}</td>
+          <td style="padding:5px 4px;font-size:11px;color:#6b7280;">{loc_short}</td>
+        </tr>
+        """
+
+    return f"""
+    <div style="background:#ffffff;border-radius:8px;padding:14px;margin-bottom:16px;border:1px solid #e5e7eb;">
+      <div style="font-size:11px;font-weight:700;color:#374151;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">
+        All Listings at a Glance
+      </div>
+      <table style="width:100%;border-collapse:collapse;">
+        <thead>
+          <tr style="border-bottom:2px solid #e5e7eb;">
+            <th style="padding:4px;font-size:10px;color:#9ca3af;text-align:center;width:28px;">#</th>
+            <th style="padding:4px;font-size:10px;color:#9ca3af;text-align:center;width:36px;">Score</th>
+            <th style="padding:4px;font-size:10px;color:#9ca3af;text-align:left;">Role</th>
+            <th style="padding:4px;font-size:10px;color:#9ca3af;text-align:left;">Company</th>
+            <th style="padding:4px;font-size:10px;color:#9ca3af;text-align:left;">Location</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows}
+        </tbody>
+      </table>
+    </div>
     """
 
 
@@ -289,6 +358,7 @@ def build_email_html(jobs: list[dict]) -> str:
     remote_count = sum(1 for j in jobs if "remote" in j.get("location", "").lower())
 
     if not jobs:
+        toc_html = ""
         cards_html = """
         <div style="text-align:center;padding:40px;color:#9ca3af;">
           <div style="font-size:48px;">&#128269;</div>
@@ -298,6 +368,9 @@ def build_email_html(jobs: list[dict]) -> str:
         """
         other_section = ""
     else:
+        # Build table of contents at the top
+        toc_html = _build_toc_table(jobs)
+
         # Split: top matches (7+) get full cards, rest go in summary table
         top_jobs = [j for j in jobs if j.get("scores", {}).get("overall", 0) >= 7]
         other_jobs = [j for j in jobs if j.get("scores", {}).get("overall", 0) < 7]
@@ -374,6 +447,9 @@ def build_email_html(jobs: list[dict]) -> str:
             </div>
           </div>
         </div>
+
+        <!-- Quick Reference Table -->
+        {toc_html}
 
         <!-- Job Cards (Top Matches) -->
         {cards_html}
