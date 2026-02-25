@@ -48,6 +48,11 @@ INDUSTRIES = [
 
 SALARY_FLOOR = 250_000
 
+# --- Career Page Scanning ---
+# Scans priority firm career sites directly (uses extra SerpAPI quota: ~10 searches/day)
+# Set to "true" to enable (requires SerpAPI paid plan for >100 searches/month)
+SCAN_CAREER_PAGES = os.getenv("SCAN_CAREER_PAGES", "false").lower() == "true"
+
 PRIORITIZE_COMPANIES = [
     "BCG",
     "Boston Consulting Group",

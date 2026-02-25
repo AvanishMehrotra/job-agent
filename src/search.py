@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import urllib.parse
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -38,9 +39,14 @@ def _is_excluded(company: str) -> bool:
     return any(exc.lower() in company_lower for exc in config.EXCLUDE_COMPANIES)
 
 
+def _google_search_url(title: str, company: str) -> str:
+    """Build a Google search URL as fallback when no direct apply link exists."""
+    query = f"{title} {company} job apply"
+    return f"https://www.google.com/search?q={urllib.parse.quote_plus(query)}"
+
+
 def _build_search_queries() -> list[str]:
     """Build search query strings from job titles and industries."""
-    # Group titles into a few broad queries to stay within API limits
     title_groups = [
         '"Partner" OR "Senior Partner" OR "Managing Director"',
         '"Vice President" OR "VP" OR "SVP"',
@@ -75,8 +81,7 @@ def search_serpapi() -> list[dict]:
             "num": 20,
         }
         if config.INCLUDE_REMOTE:
-            # Also search for remote variants
-            params_remote = {**params, "ltype": "1"}  # 1 = remote in SerpAPI
+            params_remote = {**params, "ltype": "1"}
 
         try:
             # On-site / Chicago search
@@ -102,16 +107,54 @@ def search_serpapi() -> list[dict]:
 def _normalize_serpapi(job: dict) -> dict:
     """Normalize SerpAPI job result to common schema."""
     extensions = job.get("detected_extensions", {})
+
+    # Extract all apply links from the job
+    apply_options = job.get("apply_options", [])
+    apply_links = []
+    for opt in apply_options:
+        link = opt.get("link", "")
+        title = opt.get("title", "")
+        if link:
+            apply_links.append({"url": link, "source": title})
+
+    # Primary URL: first apply link > share_link > related_links > google fallback
+    primary_url = ""
+    if apply_links:
+        primary_url = apply_links[0]["url"]
+    elif job.get("share_link"):
+        primary_url = job["share_link"]
+    elif job.get("related_links"):
+        primary_url = job["related_links"][0].get("link", "")
+
+    # Extract highlights (qualifications, responsibilities, benefits)
+    highlights = job.get("job_highlights", [])
+    qualifications = []
+    responsibilities = []
+    benefits = []
+    for h in highlights:
+        title = h.get("title", "").lower()
+        items = h.get("items", [])
+        if "qualif" in title or "require" in title:
+            qualifications = items
+        elif "responsib" in title or "duties" in title:
+            responsibilities = items
+        elif "benefit" in title:
+            benefits = items
+
     return {
         "title": job.get("title", ""),
         "company": job.get("company_name", ""),
         "location": job.get("location", ""),
-        "description": job.get("description", "")[:2000],
+        "description": job.get("description", "")[:3000],
         "salary": extensions.get("salary", ""),
         "posted": extensions.get("posted_at", ""),
         "schedule": extensions.get("schedule_type", ""),
-        "url": job.get("share_link") or job.get("related_links", [{}])[0].get("link", "") if job.get("related_links") else "",
+        "url": primary_url,
+        "apply_links": apply_links,
         "via": job.get("via", ""),
+        "qualifications": qualifications[:8],
+        "responsibilities": responsibilities[:6],
+        "benefits": benefits[:5],
         "source": "serpapi",
     }
 
@@ -135,7 +178,6 @@ def search_jsearch() -> list[dict]:
 
     for query in queries:
         try:
-            # Chicago search
             params = {
                 "query": f"{query} in Chicago, IL",
                 "page": "1",
@@ -153,7 +195,6 @@ def search_jsearch() -> list[dict]:
             for job in resp.json().get("data", []):
                 all_jobs.append(_normalize_jsearch(job))
 
-            # Remote search
             if config.INCLUDE_REMOTE:
                 params_r = {**params, "query": query, "remote_jobs_only": "true"}
                 resp_r = httpx.get(
@@ -181,16 +222,21 @@ def _normalize_jsearch(job: dict) -> dict:
         period = job.get("job_salary_period", "YEAR")
         salary_str = f"${salary_min:,.0f} - ${salary_max:,.0f} / {period.lower()}"
 
+    apply_link = job.get("job_apply_link", "")
     return {
         "title": job.get("job_title", ""),
         "company": job.get("employer_name", ""),
         "location": job.get("job_city", "") or job.get("job_country", ""),
-        "description": (job.get("job_description") or "")[:2000],
+        "description": (job.get("job_description") or "")[:3000],
         "salary": salary_str,
         "posted": job.get("job_posted_at_datetime_utc", ""),
         "schedule": job.get("job_employment_type", ""),
-        "url": job.get("job_apply_link", ""),
+        "url": apply_link,
+        "apply_links": [{"url": apply_link, "source": job.get("job_publisher", "")}] if apply_link else [],
         "via": job.get("job_publisher", ""),
+        "qualifications": [],
+        "responsibilities": [],
+        "benefits": [],
         "source": "jsearch",
     }
 
@@ -205,11 +251,16 @@ def fetch_jobs() -> list[dict]:
 
     raw_jobs = []
 
-    # Try SerpAPI first, fall back to JSearch
     if config.SERPAPI_KEY:
         raw_jobs.extend(search_serpapi())
     if config.RAPIDAPI_KEY:
         raw_jobs.extend(search_jsearch())
+
+    # Direct career page scanning (opt-in, uses extra API quota)
+    from .career_pages import search_career_pages
+    career_jobs = search_career_pages()
+    if career_jobs:
+        raw_jobs.extend(career_jobs)
 
     if not raw_jobs:
         print("[search] WARNING: No API keys configured. Set SERPAPI_KEY or RAPIDAPI_KEY.")
@@ -230,6 +281,14 @@ def fetch_jobs() -> list[dict]:
             continue
         seen[jid] = today
         job["id"] = jid
+
+        # Always ensure a clickable URL exists
+        if not job.get("url"):
+            job["url"] = _google_search_url(job["title"], job["company"])
+            job["url_is_search"] = True
+        else:
+            job["url_is_search"] = False
+
         unique_jobs.append(job)
 
     _save_seen(seen)

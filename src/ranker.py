@@ -6,7 +6,7 @@ from anthropic import Anthropic
 from . import config
 
 SYSTEM_PROMPT = """You are a job relevance scoring assistant. You evaluate job listings against
-a candidate's profile and return structured scores.
+a candidate's profile and return structured scores plus actionable guidance.
 
 CANDIDATE PROFILE:
 {profile}
@@ -33,10 +33,26 @@ RESPOND WITH ONLY valid JSON — no markdown, no explanation:
       "skill_match": 7,
       "company_prestige": 10,
       "overall": 8.5,
-      "one_liner": "Brief reason this is or isn't a good fit"
+      "one_liner": "Brief reason this is or isn't a good fit",
+      "key_requirements": ["requirement 1", "requirement 2", "requirement 3"],
+      "why_apply": "1-2 sentence compelling reason to pursue this specific role",
+      "talking_points": ["Specific experience or achievement to highlight in application"],
+      "red_flags": ["Any concerns about fit, seniority mismatch, or missing qualifications"],
+      "deep_insight": "Strategic analysis: what signal does this opening send about the company's direction, why this role exists now, what the hiring context likely is (growth, replacement, new initiative), and how the candidate's background uniquely positions them vs other candidates",
+      "networking_angle": "Specific suggestion for how to get a warm intro or stand out — e.g. who to reach out to on LinkedIn, which conference connections to leverage, or what mutual network to tap",
+      "comp_intel": "Brief competitive intelligence: what this company is doing in digital/AI/manufacturing that makes this role strategically interesting"
     }}
   ]
 }}
+
+IMPORTANT:
+- key_requirements: Extract the 3 most critical requirements from the job description
+- why_apply: Be specific — reference the candidate's experience that maps to this role
+- talking_points: Suggest 1-2 specific things from the candidate's background to emphasize
+- red_flags: Note concerns like seniority mismatch, wrong industry, or missing skills. Empty array if none.
+- deep_insight: Think like a strategy consultant. Analyze WHY this role is open, what it signals about the company's direction, and what unique advantage the candidate brings. Be specific, not generic.
+- networking_angle: Suggest a concrete networking move — not "use LinkedIn" but rather "reach out to partners in their Chicago manufacturing practice" or "leverage Industry 4.0 conference connections"
+- comp_intel: What is this company doing in digital transformation, AI, or Industry 4.0 that makes this role timely? Reference real initiatives if known.
 """
 
 
@@ -48,13 +64,20 @@ def rank_jobs(jobs: list[dict]) -> list[dict]:
     if not config.ANTHROPIC_API_KEY:
         print("[ranker] No ANTHROPIC_API_KEY set — returning unranked jobs")
         for job in jobs:
-            job["scores"] = {"overall": 5.0, "one_liner": "Unranked (no API key)"}
+            job["scores"] = {
+                "overall": 5.0,
+                "one_liner": "Unranked (no API key)",
+                "key_requirements": [],
+                "why_apply": "",
+                "talking_points": [],
+                "red_flags": [],
+            }
         return jobs
 
     client = Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
-    # Process in batches of 15 to stay within token limits
-    batch_size = 15
+    # Process in batches of 10 (more room for richer output per job)
+    batch_size = 10
     scored_jobs = []
 
     for i in range(0, len(jobs), batch_size):
@@ -68,16 +91,23 @@ def rank_jobs(jobs: list[dict]) -> list[dict]:
 
 def _score_batch(client: Anthropic, batch: list[dict]) -> list[dict]:
     """Score a batch of jobs via a single Claude call."""
-    # Build the job summaries for the prompt
     job_summaries = []
     for job in batch:
+        quals = "\n".join(f"  - {q}" for q in job.get("qualifications", [])[:5])
+        resps = "\n".join(f"  - {r}" for r in job.get("responsibilities", [])[:4])
+        quals_section = f"\nKey Qualifications:\n{quals}" if quals else ""
+        resps_section = f"\nKey Responsibilities:\n{resps}" if resps else ""
+
         summary = (
             f"ID: {job['id']}\n"
             f"Title: {job['title']}\n"
             f"Company: {job['company']}\n"
             f"Location: {job['location']}\n"
             f"Salary: {job.get('salary', 'Not listed')}\n"
-            f"Description (excerpt): {job['description'][:500]}\n"
+            f"Posted: {job.get('posted', 'Unknown')}\n"
+            f"Description: {job['description'][:800]}"
+            f"{quals_section}"
+            f"{resps_section}\n"
         )
         job_summaries.append(summary)
 
@@ -86,14 +116,12 @@ def _score_batch(client: Anthropic, batch: list[dict]) -> list[dict]:
     try:
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=2000,
+            max_tokens=4000,
             system=SYSTEM_PROMPT.format(profile=config.CANDIDATE_PROFILE),
             messages=[{"role": "user", "content": user_msg}],
         )
 
-        # Parse the JSON response
         text = response.content[0].text.strip()
-        # Handle potential markdown wrapping
         if text.startswith("```"):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
 
@@ -104,7 +132,7 @@ def _score_batch(client: Anthropic, batch: list[dict]) -> list[dict]:
             if job["id"] in scores_by_id:
                 job["scores"] = scores_by_id[job["id"]]
             else:
-                job["scores"] = {"overall": 5.0, "one_liner": "Not scored"}
+                job["scores"] = _empty_scores("Not scored")
 
         input_tokens = response.usage.input_tokens
         output_tokens = response.usage.output_tokens
@@ -113,10 +141,24 @@ def _score_batch(client: Anthropic, batch: list[dict]) -> list[dict]:
     except json.JSONDecodeError as e:
         print(f"[ranker] JSON parse error: {e}")
         for job in batch:
-            job["scores"] = {"overall": 5.0, "one_liner": "Parse error during scoring"}
+            job["scores"] = _empty_scores("Parse error during scoring")
     except Exception as e:
         print(f"[ranker] Claude API error: {e}")
         for job in batch:
-            job["scores"] = {"overall": 5.0, "one_liner": "API error during scoring"}
+            job["scores"] = _empty_scores("API error during scoring")
 
     return batch
+
+
+def _empty_scores(reason: str) -> dict:
+    return {
+        "overall": 5.0,
+        "one_liner": reason,
+        "key_requirements": [],
+        "why_apply": "",
+        "talking_points": [],
+        "red_flags": [],
+        "deep_insight": "",
+        "networking_angle": "",
+        "comp_intel": "",
+    }
