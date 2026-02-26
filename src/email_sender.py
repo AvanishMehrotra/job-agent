@@ -312,6 +312,13 @@ def _build_toc_table(jobs: list[dict]) -> str:
                 badge = ' <span style="color:#2563eb;font-size:9px;">&#9733;</span>'
                 break
 
+        # Compact salary for TOC
+        sal_short = ""
+        if salary:
+            sal_short = salary.replace(" a year", "").replace(" per year", "").replace("per year", "").replace("a year", "").strip()
+            if len(sal_short) > 25:
+                sal_short = sal_short[:22] + "..."
+
         rows += f"""
         <tr style="border-bottom:1px solid #f3f4f6;">
           <td style="padding:5px 4px;font-size:11px;color:#9ca3af;text-align:center;">{i + 1}</td>
@@ -319,8 +326,12 @@ def _build_toc_table(jobs: list[dict]) -> str:
           <td style="padding:5px 4px;font-size:12px;"><a href="#{anchor_id}" style="color:#111827;text-decoration:none;">{title}</a></td>
           <td style="padding:5px 4px;font-size:11px;color:#6b7280;">{company}{badge}</td>
           <td style="padding:5px 4px;font-size:11px;color:#6b7280;">{loc_short}</td>
+          <td style="padding:5px 4px;font-size:11px;color:#059669;">{sal_short}</td>
         </tr>
         """
+
+    # Google Jobs search URL for past/all listings with the same criteria
+    past_url = "https://www.google.com/search?q=Partner+OR+VP+OR+CIO+OR+%22Managing+Director%22+manufacturing+OR+consulting+OR+technology+Chicago&ibp=htl;jobs"
 
     return f"""
     <div style="background:#ffffff;border-radius:8px;padding:14px;margin-bottom:16px;border:1px solid #e5e7eb;">
@@ -335,12 +346,16 @@ def _build_toc_table(jobs: list[dict]) -> str:
             <th style="padding:4px;font-size:10px;color:#9ca3af;text-align:left;">Role</th>
             <th style="padding:4px;font-size:10px;color:#9ca3af;text-align:left;">Company</th>
             <th style="padding:4px;font-size:10px;color:#9ca3af;text-align:left;">Location</th>
+            <th style="padding:4px;font-size:10px;color:#9ca3af;text-align:left;">Salary</th>
           </tr>
         </thead>
         <tbody>
           {rows}
         </tbody>
       </table>
+      <div style="margin-top:10px;padding-top:8px;border-top:1px solid #f3f4f6;text-align:center;">
+        <a href="{past_url}" style="font-size:12px;color:#2563eb;text-decoration:none;">Browse all matching listings on Google Jobs &rarr;</a>
+      </div>
     </div>
     """
 
